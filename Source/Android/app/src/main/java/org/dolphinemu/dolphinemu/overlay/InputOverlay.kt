@@ -9,6 +9,8 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
 import android.util.AttributeSet
 import android.util.DisplayMetrics
@@ -68,6 +70,12 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     private val customElements = mutableMapOf<String, OverlayElement>()
     private var lastTapTime: Long = 0L
     private var lastTappedObject: Any? = null
+    // Paint for drawing action labels (F1, F2, ...)
+    private val actionTextPaint: Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        setShadowLayer(4f, 0f, 0f, Color.BLACK)
+    }
 
     private val preferences: SharedPreferences
         get() =
@@ -140,6 +148,9 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         for (joystick in overlayJoysticks) {
             joystick.draw(canvas)
         }
+
+    // Draw F-number labels over custom action buttons for clarity
+    drawActionLabels(canvas)
     }
 
     override fun onTouch(v: View, event: MotionEvent): Boolean {
@@ -386,7 +397,65 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     private fun handleCustomAction(actionKey: String?) {
         when (actionKey) {
             "toggle_sideways" -> toggleWiimoteSideways()
+            "toggle_ir_recenter" -> toggleIRRecenter()
+            "cycle_ir_mode" -> cycleIRMode()
             else -> {}
+        }
+    }
+
+    private fun toggleIRRecenter() {
+        val settings = org.dolphinemu.dolphinemu.features.settings.model.Settings()
+        settings.loadSettings()
+        val current = org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting.MAIN_IR_ALWAYS_RECENTER.boolean
+        org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting.MAIN_IR_ALWAYS_RECENTER.setBoolean(settings, !current)
+        settings.saveSettings(null)
+        // Update pointer behavior immediately
+        refreshOverlayPointer()
+        invalidate()
+    }
+
+    private fun cycleIRMode() {
+        val settings = org.dolphinemu.dolphinemu.features.settings.model.Settings()
+        settings.loadSettings()
+        val current = IntSetting.MAIN_IR_MODE.int
+        val next = (current + 1) % 3 // 0: disabled, 1: follow, 2: drag
+        IntSetting.MAIN_IR_MODE.setInt(settings, next)
+        settings.saveSettings(null)
+        // Update pointer behavior immediately
+        refreshOverlayPointer()
+        invalidate()
+    }
+
+    private fun drawActionLabels(canvas: Canvas) {
+        if (customIdMap.isEmpty()) return
+        // Build a stable ordering of action buttons -> F1, F2, ...
+        val actionEntries = mutableListOf<Pair<InputOverlayDrawableButton, String>>()
+        val customButtons = overlayButtons.filter { isCustom(it) }
+        val actionModels = customButtons.mapNotNull { btn ->
+            val id = customIdMap[btn] ?: return@mapNotNull null
+            val model = customElements[id]
+            if (model is OverlayElement.Button &&
+                model.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
+            ) btn to id else null
+        }
+        // Sort by id for stability (or could sort by position)
+        val sorted = actionModels.sortedBy { it.second }
+        var number = 1
+        for ((btn, _) in sorted) {
+            actionEntries.add(btn to "F$number")
+            number++
+        }
+        // Draw centered label with size relative to button size
+        for ((btn, label) in actionEntries) {
+            val b = btn.bounds
+            if (b.isEmpty) continue
+            val size = (minOf(b.width(), b.height()) * 0.4f).coerceAtLeast(12f)
+            actionTextPaint.textSize = size
+            // Center vertically using font metrics
+            val fm = actionTextPaint.fontMetrics
+            val centerX = b.exactCenterX()
+            val centerY = b.exactCenterY() - (fm.ascent + fm.descent) / 2f
+            canvas.drawText(label, centerX, centerY, actionTextPaint)
         }
     }
 
@@ -481,6 +550,19 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     if (buttonBeingConfigured == null &&
                         dpad.bounds.contains(fingerPositionX, fingerPositionY)
                     ) {
+                        // Support delete on double-tap for custom D-Pad
+                        val now = System.currentTimeMillis()
+                        if (isCustom(dpad) && lastTappedObject === dpad && now - lastTapTime < 350) {
+                            val id = customIdMap.remove(dpad) ?: ""
+                            customElements.remove(id)
+                            customLayout?.elements?.removeIf { it.id == id }
+                            overlayDpads.remove(dpad)
+                            invalidate()
+                            saveCustomPositions()
+                            return true
+                        }
+                        lastTapTime = now
+                        lastTappedObject = dpad
                         dpadBeingConfigured = dpad
                         dpadBeingConfigured?.onConfigureTouch(event)
                     }
@@ -520,6 +602,19 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     if (joystickBeingConfigured == null &&
                         joystick.bounds.contains(fingerPositionX, fingerPositionY)
                     ) {
+                        // Support delete on double-tap for custom Joystick
+                        val now = System.currentTimeMillis()
+                        if (isCustom(joystick) && lastTappedObject === joystick && now - lastTapTime < 350) {
+                            val id = customIdMap.remove(joystick) ?: ""
+                            customElements.remove(id)
+                            customLayout?.elements?.removeIf { it.id == id }
+                            overlayJoysticks.remove(joystick)
+                            invalidate()
+                            saveCustomPositions()
+                            return true
+                        }
+                        lastTapTime = now
+                        lastTappedObject = joystick
                         joystickBeingConfigured = joystick
                         joystickBeingConfigured?.onConfigureTouch(event)
                     }
@@ -707,8 +802,9 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                 is InputOverlayDrawableJoystick -> { el.x = obj.bounds.left; el.y = obj.bounds.top }
             }
         }
-        // Autosave to per-game if available, else global
-        OverlayStorage.save(ctx, layout, gameSpecific = true)
+    // Autosave both scopes to ensure changes persist regardless of scope selection
+    OverlayStorage.save(ctx, layout, gameSpecific = true)
+    OverlayStorage.save(ctx, layout, gameSpecific = false)
     }
 
     private fun getAnalogControlForTrigger(control: Int): Int = when (control) {
