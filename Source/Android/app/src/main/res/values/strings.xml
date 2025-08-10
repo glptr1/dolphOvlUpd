@@ -627,6 +627,14 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="emulation_ir_mode">IR Mode</string>
     <string name="emulation_ir_sensitivity">IR Sensitivity</string>
     <string name="emulation_choose_doubletap">Double tap button</string>
+    <!-- Overlay Editor Dialog -->
+    <string name="overlay_editor_title">Overlay Editor</string>
+    <string name="overlay_editor_type">Type</string>
+    <string name="overlay_editor_mapping">Mapping (Wii Remote)</string>
+    <string name="overlay_editor_mapping_type">Mapping Type</string>
+    <string name="overlay_editor_scope_game">Save per game (otherwise global)</string>
+    <string name="add">Add</string>
+    <string name="save">Save</string>
 
     <!-- GC Adapter Menu-->
     <string name="gc_adapter_rumble">Enable Vibration</string>

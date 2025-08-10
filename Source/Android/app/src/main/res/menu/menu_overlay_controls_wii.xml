@@ -7,6 +7,10 @@
         android:title="@string/emulation_edit_layout"/>
 
     <item
+        android:id="@+id/menu_emulation_open_overlay_editor"
+        android:title="@string/overlay_editor_title"/>
+
+    <item
         android:id="@+id/menu_emulation_toggle_controls"
         android:title="@string/emulation_toggle_controls"/>
 

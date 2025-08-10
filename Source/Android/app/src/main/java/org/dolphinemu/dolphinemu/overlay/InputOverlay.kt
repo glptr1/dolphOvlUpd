@@ -28,8 +28,13 @@ import org.dolphinemu.dolphinemu.features.input.model.InputOverrider.ControlId
 import org.dolphinemu.dolphinemu.features.input.model.controlleremu.EmulatedController
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
+// (duplicate import removed)
+import org.dolphinemu.dolphinemu.activities.EmulationActivity
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting.Companion.getSettingForSIDevice
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting.Companion.getSettingForWiimoteSource
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayElement
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayLayout
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayStorage
 import java.util.Arrays
 
 /**
@@ -57,6 +62,12 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     private var buttonBeingConfigured: InputOverlayDrawableButton? = null
     private var dpadBeingConfigured: InputOverlayDrawableDpad? = null
     private var joystickBeingConfigured: InputOverlayDrawableJoystick? = null
+    // Custom overlay support (Wii only)
+    private var customLayout: OverlayLayout? = null
+    private val customIdMap = mutableMapOf<Any, String>()
+    private val customElements = mutableMapOf<String, OverlayElement>()
+    private var lastTapTime: Long = 0L
+    private var lastTappedObject: Any? = null
 
     private val preferences: SharedPreferences
         get() =
@@ -118,7 +129,7 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     override fun draw(canvas: Canvas) {
         super.draw(canvas)
 
-        for (button in overlayButtons) {
+    for (button in overlayButtons.toList()) {
             button.draw(canvas)
         }
 
@@ -143,11 +154,15 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         // Tracks if any button/joystick is pressed down
         var pressed = false
 
-        for (button in overlayButtons) {
+    var downHandled = false
+    // Iterate buttons with custom ones first so they take priority when overlapping
+    val orderedButtons = overlayButtons.toList().sortedBy { if (isCustom(it)) 0 else 1 }
+    for (button in orderedButtons) {
             // Determine the button state to apply based on the MotionEvent action flag.
             when (action) {
                 MotionEvent.ACTION_DOWN,
                 MotionEvent.ACTION_POINTER_DOWN -> {
+            if (downHandled) continue
                     // If a pointer enters the bounds of a button, press that button.
                     if (button.bounds.contains(
                             event.getX(pointerIndex).toInt(),
@@ -157,15 +172,49 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                         button.setPressedState(if (button.latching) !button.getPressedState() else true)
                         button.trackId = event.getPointerId(pointerIndex)
                         pressed = true
-                        InputOverrider.setControlState(controllerIndex, button.control, if (button.getPressedState()) 1.0 else 0.0)
-
-                        val analogControl = getAnalogControlForTrigger(button.control)
-                        if (analogControl >= 0)
+                        // Custom action handling for ACTION-mapped buttons; otherwise set control state
+                        if (isCustom(button)) {
+                            val elId = customIdMap[button] ?: ""
+                            val model = customElements[elId]
+                            if (model is OverlayElement.Button &&
+                                model.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
+                            ) {
+                                // Perform special action, do not send any control
+                                handleCustomAction(model.actionKey)
+                            } else {
+                                // Custom but control-mapped: prefer model.controlId if present
+                                val ctl = if (model is OverlayElement.Button) (model.controlId
+                                    ?: button.control) else button.control
+                                InputOverrider.setControlState(
+                                    controllerIndex,
+                                    ctl,
+                                    if (button.getPressedState()) 1.0 else 0.0
+                                )
+                                val analogControl = getAnalogControlForTrigger(ctl)
+                                if (analogControl >= 0)
+                                    InputOverrider.setControlState(
+                                        controllerIndex,
+                                        analogControl,
+                                        1.0
+                                    )
+                            }
+                        } else {
+                            // Stock button
                             InputOverrider.setControlState(
                                 controllerIndex,
-                                analogControl,
-                                1.0
+                                button.control,
+                                if (button.getPressedState()) 1.0 else 0.0
                             )
+                            val analogControl = getAnalogControlForTrigger(button.control)
+                            if (analogControl >= 0)
+                                InputOverrider.setControlState(
+                                    controllerIndex,
+                                    analogControl,
+                                    1.0
+                                )
+                        }
+                        // Ensure only one button handles this DOWN event
+                        downHandled = true
                     }
                 }
 
@@ -175,15 +224,43 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     if (button.trackId == event.getPointerId(pointerIndex)) {
                         if (!button.latching)
                             button.setPressedState(false)
-                        InputOverrider.setControlState(controllerIndex, button.control, if (button.getPressedState()) 1.0 else 0.0)
-
-                        val analogControl = getAnalogControlForTrigger(button.control)
-                        if (analogControl >= 0)
+                        val isCustomBtn = isCustom(button)
+                        if (!isCustomBtn) {
+                            // Stock release
                             InputOverrider.setControlState(
                                 controllerIndex,
-                                analogControl,
-                                0.0
+                                button.control,
+                                if (button.getPressedState()) 1.0 else 0.0
                             )
+                            val analogControl = getAnalogControlForTrigger(button.control)
+                            if (analogControl >= 0)
+                                InputOverrider.setControlState(
+                                    controllerIndex,
+                                    analogControl,
+                                    0.0
+                                )
+                        } else {
+                            // Custom: Only release if this is a control-mapped button
+                            val elId = customIdMap[button] ?: ""
+                            val model = customElements[elId]
+                            if (model is OverlayElement.Button &&
+                                model.mappingType != org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
+                            ) {
+                                val ctl = model.controlId ?: button.control
+                                InputOverrider.setControlState(
+                                    controllerIndex,
+                                    ctl,
+                                    if (button.getPressedState()) 1.0 else 0.0
+                                )
+                                val analogControl = getAnalogControlForTrigger(ctl)
+                                if (analogControl >= 0)
+                                    InputOverrider.setControlState(
+                                        controllerIndex,
+                                        analogControl,
+                                        0.0
+                                    )
+                            }
+                        }
 
                         button.trackId = -1
                     }
@@ -306,6 +383,29 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         return true
     }
 
+    private fun handleCustomAction(actionKey: String?) {
+        when (actionKey) {
+            "toggle_sideways" -> toggleWiimoteSideways()
+            else -> {}
+        }
+    }
+
+    private fun toggleWiimoteSideways() {
+        // Here controllerIndex is already the Wii index (0..3) when Wiimote overlays are active
+        val wiimoteIndex = controllerIndex
+        if (wiimoteIndex < 0 || wiimoteIndex >= 4) return
+        val sidewaysSetting = EmulatedController.getSidewaysWiimoteSetting(wiimoteIndex)
+        val mapping = InputMappingBooleanSetting(sidewaysSetting)
+        val current = mapping.boolean
+        val settings = org.dolphinemu.dolphinemu.features.settings.model.Settings()
+        settings.loadSettings()
+        mapping.setBoolean(settings, !current)
+        settings.saveSettings(null)
+        // Refresh this overlay to reflect new sideways/upright state
+        refreshControls()
+        invalidate()
+    }
+
     fun onTouchWhileEditing(event: MotionEvent): Boolean {
         val pointerIndex = event.actionIndex
         val fingerPositionX = event.getX(pointerIndex).toInt()
@@ -326,6 +426,20 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     if (buttonBeingConfigured == null &&
                         button.bounds.contains(fingerPositionX, fingerPositionY)
                     ) {
+                        // Support delete on double-tap for custom elements
+                        val now = System.currentTimeMillis()
+                        if (isCustom(button) && lastTappedObject === button && now - lastTapTime < 350) {
+                            val id = customIdMap.remove(button) ?: ""
+                            customElements.remove(id)
+                            customLayout?.elements?.removeIf { it.id == id }
+                            // Defer removal: working on a snapshot avoids concurrent modification
+                            overlayButtons.remove(button)
+                            invalidate()
+                            saveCustomPositions()
+                            return true
+                        }
+                        lastTapTime = now
+                        lastTappedObject = button
                         buttonBeingConfigured = button
                         buttonBeingConfigured?.onConfigureTouch(event)
                     }
@@ -342,12 +456,16 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_POINTER_UP -> {
                     if (buttonBeingConfigured == button) {
-                        // Persist button position by saving new place.
-                        saveControlPosition(
-                            buttonBeingConfigured!!.legacyId,
-                            buttonBeingConfigured!!.bounds.left,
-                            buttonBeingConfigured!!.bounds.top, orientation
-                        )
+                        // Persist button position; if custom, update JSON, else SharedPreferences
+                        if (isCustom(button)) {
+                            saveCustomPositions()
+                        } else {
+                            saveControlPosition(
+                                buttonBeingConfigured!!.legacyId,
+                                buttonBeingConfigured!!.bounds.left,
+                                buttonBeingConfigured!!.bounds.top, orientation
+                            )
+                        }
                         buttonBeingConfigured = null
                     }
                 }
@@ -379,13 +497,16 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_POINTER_UP -> {
                     if (dpadBeingConfigured == dpad) {
-                        // Persist button position by saving new place.
-                        saveControlPosition(
-                            dpadBeingConfigured!!.legacyId,
-                            dpadBeingConfigured!!.bounds.left,
-                            dpadBeingConfigured!!.bounds.top,
-                            orientation
-                        )
+                        if (isCustom(dpad)) {
+                            saveCustomPositions()
+                        } else {
+                            saveControlPosition(
+                                dpadBeingConfigured!!.legacyId,
+                                dpadBeingConfigured!!.bounds.left,
+                                dpadBeingConfigured!!.bounds.top,
+                                orientation
+                            )
+                        }
                         dpadBeingConfigured = null
                     }
                 }
@@ -414,12 +535,16 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_POINTER_UP -> {
                     if (joystickBeingConfigured != null) {
-                        saveControlPosition(
-                            joystickBeingConfigured!!.legacyId,
-                            joystickBeingConfigured!!.bounds.left,
-                            joystickBeingConfigured!!.bounds.top,
-                            orientation
-                        )
+                        if (isCustom(joystick)) {
+                            saveCustomPositions()
+                        } else {
+                            saveControlPosition(
+                                joystickBeingConfigured!!.legacyId,
+                                joystickBeingConfigured!!.bounds.left,
+                                joystickBeingConfigured!!.bounds.top,
+                                orientation
+                            )
+                        }
                         joystickBeingConfigured = null
                     }
                 }
@@ -445,6 +570,145 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
 
         Arrays.fill(gcPadRegistered, false)
         Arrays.fill(wiimoteRegistered, false)
+    }
+
+    private fun loadAndAddCustomOverlayControls(orientation: String) {
+        // Wii only: load custom layout (per-game preferred, fallback to global)
+        val ctx = (context as? Activity) ?: return
+        customLayout = OverlayStorage.load(ctx)
+        val layout = customLayout ?: return
+
+        for (el in layout.elements) {
+            when (el) {
+                is OverlayElement.Button -> addCustomButton(el, orientation)
+                is OverlayElement.DPad -> addCustomDpad(el, orientation)
+                is OverlayElement.Joystick -> addCustomJoystick(el, orientation)
+            }
+            customElements[el.id] = el
+        }
+    }
+
+    private fun addCustomButton(el: OverlayElement.Button, orientation: String) {
+        // Choose visuals; if no explicit appearance, infer from controlId for common Wiimote buttons
+        val inferredAppearance: String? = if (el.appearance == null &&
+            el is OverlayElement.Button && el.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.CONTROL
+        ) {
+            when (el.controlId) {
+                ControlId.WIIMOTE_B_BUTTON -> "wiimote_b"
+                ControlId.WIIMOTE_ONE_BUTTON -> "wiimote_one"
+                ControlId.WIIMOTE_TWO_BUTTON -> "wiimote_two"
+                ControlId.WIIMOTE_PLUS_BUTTON -> "wiimote_plus"
+                ControlId.WIIMOTE_MINUS_BUTTON -> "wiimote_minus"
+                ControlId.WIIMOTE_HOME_BUTTON -> "wiimote_home"
+                else -> null
+            }
+        } else el.appearance
+
+        val def = when (inferredAppearance) {
+            "wiimote_b" -> R.drawable.wiimote_b
+            "wiimote_one" -> R.drawable.wiimote_one
+            "wiimote_two" -> R.drawable.wiimote_two
+            "wiimote_plus" -> R.drawable.wiimote_plus
+            "wiimote_minus" -> R.drawable.wiimote_minus
+            "wiimote_home" -> R.drawable.wiimote_home
+            else -> R.drawable.wiimote_a
+        }
+        val press = when (inferredAppearance) {
+            "wiimote_b" -> R.drawable.wiimote_b_pressed
+            "wiimote_one" -> R.drawable.wiimote_one_pressed
+            "wiimote_two" -> R.drawable.wiimote_two_pressed
+            "wiimote_plus" -> R.drawable.wiimote_plus_pressed
+            "wiimote_minus" -> R.drawable.wiimote_minus_pressed
+            "wiimote_home" -> R.drawable.wiimote_home_pressed
+            else -> R.drawable.wiimote_a_pressed
+        }
+        // Map appearance to a sensible legacyId for sizing. Defaults to Wiimote A.
+        val legacyIdForScale = when (inferredAppearance) {
+            "wiimote_b" -> ButtonType.WIIMOTE_BUTTON_B
+            "wiimote_one" -> ButtonType.WIIMOTE_BUTTON_1
+            "wiimote_two" -> ButtonType.WIIMOTE_BUTTON_2
+            "wiimote_plus" -> ButtonType.WIIMOTE_BUTTON_PLUS
+            "wiimote_minus" -> ButtonType.WIIMOTE_BUTTON_MINUS
+            "wiimote_home" -> ButtonType.WIIMOTE_BUTTON_HOME
+            else -> ButtonType.WIIMOTE_BUTTON_A
+        }
+        // For ACTION-mapped buttons, do not bind to a control; use -1 sentinel
+        val control = if (el.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.CONTROL)
+            (el.controlId ?: ControlId.WIIMOTE_A_BUTTON) else -1
+        val btn = initializeOverlayButton(context, def, press, /*legacyId*/ legacyIdForScale, control, orientation, false)
+        // Override with custom position/scale
+        val width = (btn.width * el.scale).toInt().coerceAtLeast(1)
+        val height = (btn.height * el.scale).toInt().coerceAtLeast(1)
+        val left = el.x
+        val top = el.y
+        btn.setBounds(left, top, left + width, top + height)
+        btn.setPosition(left, top)
+        overlayButtons.add(btn)
+        customIdMap[btn] = el.id
+    }
+
+    private fun addCustomDpad(el: OverlayElement.DPad, orientation: String) {
+        val dpad = initializeOverlayDpad(
+            context,
+            R.drawable.gcwii_dpad,
+            R.drawable.gcwii_dpad_pressed_one_direction,
+            R.drawable.gcwii_dpad_pressed_two_directions,
+            /*legacyId*/ ButtonType.WIIMOTE_UP,
+            el.upControlId,
+            el.downControlId,
+            el.leftControlId,
+            el.rightControlId,
+            orientation
+        )
+        val width = (dpad.width * el.scale).toInt().coerceAtLeast(1)
+        val height = (dpad.height * el.scale).toInt().coerceAtLeast(1)
+        val left = el.x
+        val top = el.y
+        dpad.setBounds(left, top, left + width, top + height)
+        dpad.setPosition(left, top)
+        overlayDpads.add(dpad)
+        customIdMap[dpad] = el.id
+    }
+
+    private fun addCustomJoystick(el: OverlayElement.Joystick, orientation: String) {
+        val joy = initializeOverlayJoystick(
+            context,
+            R.drawable.gcwii_joystick_range,
+            R.drawable.gcwii_joystick,
+            R.drawable.gcwii_joystick_pressed,
+            /*legacyId*/ ButtonType.NUNCHUK_STICK,
+            el.xControlId,
+            el.yControlId,
+            orientation
+        )
+        val left = el.x
+        val top = el.y
+        // Scale joystick by adjusting outer rect
+        val bounds = joy.bounds
+        val w = (bounds.width() * el.scale).toInt().coerceAtLeast(1)
+        val h = (bounds.height() * el.scale).toInt().coerceAtLeast(1)
+        joy.setBounds(left, top, left + w, top + h)
+        joy.setPosition(left, top)
+        overlayJoysticks.add(joy)
+        customIdMap[joy] = el.id
+    }
+
+    private fun isCustom(obj: Any): Boolean = customIdMap.containsKey(obj)
+
+    private fun saveCustomPositions() {
+        val ctx = (context as? Activity) ?: return
+        val layout = customLayout ?: return
+        // Update model positions from drawable bounds
+        for ((obj, id) in customIdMap) {
+            val el = customElements[id] ?: continue
+            when (obj) {
+                is InputOverlayDrawableButton -> { el.x = obj.bounds.left; el.y = obj.bounds.top }
+                is InputOverlayDrawableDpad -> { el.x = obj.bounds.left; el.y = obj.bounds.top }
+                is InputOverlayDrawableJoystick -> { el.x = obj.bounds.left; el.y = obj.bounds.top }
+            }
+        }
+        // Autosave to per-game if available, else global
+        OverlayStorage.save(ctx, layout, gameSpecific = true)
     }
 
     private fun getAnalogControlForTrigger(control: Int): Int = when (control) {
@@ -990,6 +1254,8 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         overlayButtons.removeAll(overlayButtons)
         overlayDpads.removeAll(overlayDpads)
         overlayJoysticks.removeAll(overlayJoysticks)
+    customIdMap.clear()
+    customElements.clear()
 
         val orientation =
             if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) "-Portrait" else ""
@@ -1026,6 +1292,8 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     wiimoteRegistered[this.controllerIndex] = true
 
                     addWiimoteOverlayControls(orientation)
+                    // Load and render custom Wii elements
+                    loadAndAddCustomOverlayControls(orientation)
                 }
 
                 OVERLAY_WIIMOTE_NUNCHUK -> {
@@ -1035,6 +1303,7 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
 
                     addWiimoteOverlayControls(orientation)
                     addNunchukOverlayControls(orientation)
+                    loadAndAddCustomOverlayControls(orientation)
                 }
 
                 OVERLAY_WIIMOTE_CLASSIC -> {
@@ -1043,6 +1312,7 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     wiimoteRegistered[this.controllerIndex] = true
 
                     addClassicOverlayControls(orientation)
+                    loadAndAddCustomOverlayControls(orientation)
                 }
 
                 OVERLAY_NONE -> {}

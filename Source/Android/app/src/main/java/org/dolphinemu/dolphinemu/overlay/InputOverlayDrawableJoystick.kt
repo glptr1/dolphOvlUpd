@@ -255,4 +255,13 @@ class InputOverlayDrawableJoystick(
             boundsBoxBitmap.alpha = value
         }
     }
+
+    // Allows external callers to resize/reposition and keep internal rects in sync
+    fun setBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        bounds = Rect(left, top, right, bottom)
+        virtBounds = Rect(left, top, right, bottom)
+        boundsBoxBitmap.bounds = virtBounds
+        setInnerBounds()
+        origBounds = Rect(bounds)
+    }
 }

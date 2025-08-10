@@ -56,6 +56,9 @@ import org.dolphinemu.dolphinemu.fragments.SaveLoadStateFragment.SaveOrLoad
 import org.dolphinemu.dolphinemu.overlay.InputOverlay
 import org.dolphinemu.dolphinemu.overlay.InputOverlayPointer
 import org.dolphinemu.dolphinemu.ui.main.MainPresenter
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayEditorDialog
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayLayout
+import org.dolphinemu.dolphinemu.overlay.editor.OverlayStorage
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.utils.AfterDirectoryInitializationRunner
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization
@@ -63,7 +66,7 @@ import org.dolphinemu.dolphinemu.utils.FileBrowserHelper
 import org.dolphinemu.dolphinemu.utils.ThemeHelper
 import kotlin.math.roundToInt
 
-class EmulationActivity : AppCompatActivity(), ThemeProvider {
+class EmulationActivity : AppCompatActivity(), ThemeProvider, OverlayEditorDialog.Listener {
     private var emulationFragment: EmulationFragment? = null
 
     private lateinit var settings: Settings
@@ -77,6 +80,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
     private var riivolution = false
     private var launchSystemMenu = false
     private var menuToastShown = false
+    private var pendingCustomLayout: OverlayLayout = OverlayLayout()
 
     private var skylanderData = Skylander(-1, -1, "Slot")
     private var infinityFigureData = Figure(-1, "Position")
@@ -449,6 +453,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
             MENU_ACTION_EDIT_CONTROLS_PLACEMENT -> editControlsPlacement()
             MENU_ACTION_RESET_OVERLAY -> resetOverlay()
             MENU_ACTION_TOGGLE_CONTROLS -> toggleControls()
+            MENU_ACTION_OPEN_OVERLAY_EDITOR -> OverlayEditorDialog().show(supportFragmentManager, "overlay-editor")
             MENU_ACTION_LATCHING_CONTROLS -> latchingControls()
             MENU_ACTION_ADJUST_SCALE -> adjustScale()
             MENU_ACTION_CHOOSE_CONTROLLER -> chooseController()
@@ -513,6 +518,27 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
             closeMenu()
             emulationFragment?.startConfiguringControls()
         }
+    }
+
+    override fun onAddElement(
+        element: org.dolphinemu.dolphinemu.overlay.editor.OverlayElement,
+        gameSpecific: Boolean
+    ) {
+        // Load current layout (prefer game-specific), append, save, and refresh overlay
+        val existing = OverlayStorage.load(this) ?: OverlayLayout()
+        existing.elements.add(element)
+        OverlayStorage.save(this, existing, gameSpecific)
+        emulationFragment?.refreshInputOverlay()
+        Toast.makeText(
+            this,
+            getString(R.string.add) + ": " + element.type.name,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    override fun onSaveLayout(gameSpecific: Boolean) {
+        OverlayStorage.save(this, pendingCustomLayout, gameSpecific)
+        Toast.makeText(this, if (gameSpecific) getString(R.string.settings_saved_game_specific, NativeLibrary.GetCurrentTitleDescription()) else getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
 
     // Gets button presses
@@ -1025,6 +1051,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
         const val EXTRA_INFINITY_NUM = "FigureNum"
         const val EXTRA_INFINITY_NAME = "FigureName"
         const val MENU_ACTION_EDIT_CONTROLS_PLACEMENT = 0
+    const val MENU_ACTION_OPEN_OVERLAY_EDITOR = 1001
         const val MENU_ACTION_TOGGLE_CONTROLS = 1
         const val MENU_ACTION_ADJUST_SCALE = 2
         const val MENU_ACTION_CHOOSE_CONTROLLER = 3
@@ -1064,6 +1091,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
         init {
             buttonsActionsMap.apply {
                 append(R.id.menu_emulation_edit_layout, MENU_ACTION_EDIT_CONTROLS_PLACEMENT)
+                append(R.id.menu_emulation_open_overlay_editor, MENU_ACTION_OPEN_OVERLAY_EDITOR)
                 append(R.id.menu_emulation_toggle_controls, MENU_ACTION_TOGGLE_CONTROLS)
                 append(R.id.menu_emulation_latching_controls, MENU_ACTION_LATCHING_CONTROLS)
                 append(R.id.menu_emulation_adjust_scale, MENU_ACTION_ADJUST_SCALE)
