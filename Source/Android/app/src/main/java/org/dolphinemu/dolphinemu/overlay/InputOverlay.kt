@@ -519,14 +519,14 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
         InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y)
         InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
-        // Lower-frequency, strong alternating burst to better match "shake" detection.
-        // About 7 Hz, ~500 ms total, with 60% duty per half-cycle.
+    // Lower-frequency, strong alternating burst to better match "shake" detection.
+    // About 7 Hz, ~250 ms total, with 60% duty per half-cycle.
         val amp = 32.0  // ~3.3 g
         val gyro = 22.0 // rad/s scale used by core
         val freqHz = 7.0
         val halfPeriodMs = Math.max(16L, Math.round(1000.0 / (2.0 * freqHz))) // ~71 ms
         val onMs = (halfPeriodMs * 0.6).toLong() // ~60% on, 40% off each half
-        val total = 500L
+    val total = 250L
 
     android.util.Log.d("Overlay", "shake burst start total=${total}ms, half=${halfPeriodMs}ms")
         var t = 0L

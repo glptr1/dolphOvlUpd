@@ -62,7 +62,7 @@ Planned next:
 - IR joystick: reworked pointer to velocity-based control at 60 Hz, added PREVENT_RECENTER during activity and delayed recenter (~8s) after inactivity. Inversion finalized per user; left unchanged.
 - Editor polish: touch routing prioritizes custom items when overlapping; autosave/load for per-game and global layouts. Added quick actions: Toggle Sideways, Toggle IR Recenter, Cycle IR Mode, Save/Load State (slot 9).
 - Wiimote-only scope: removed non-Wiimote mappings from selection lists; Wiimote D-Pad removed from custom mapping. Fixed Wiimote A icon fallback.
-- Shake iterations (IMU spoofing): implemented horizontal-dominant alternating pattern (~7 Hz) with gyro assist for both tap burst (~500ms) and hold cycling. Build succeeded with these changes.
+- Shake iterations (IMU spoofing): implemented horizontal-dominant alternating pattern (~7 Hz) with gyro assist for both tap burst and hold cycling. Initial tap burst was ~500 ms.
 - Native Wiimote Shake override bridge: added direct override channels and wiring end-to-end.
   - Core C++:
     - InputOverrider: new control IDs WIIMOTE_SHAKE_X/Y/Z (62–64). Shifted NUNCHUK_IMU_ACCEL_* to 65–67. Mapped WiimoteEmu::Wiimote::SHAKE_GROUP X/Y/Z to these IDs.
@@ -72,6 +72,8 @@ Planned next:
     - InputOverrider.ControlId updated to include WIIMOTE_SHAKE_X/Y/Z and shifted Nunchuk IMU IDs.
     - InputOverlay: on shake action, sets direct Shake overrides each half-cycle (X with small Z assist) alongside IMU pulses for reliability. Added Toast/log on activation.
 - Tap + Hold behavior: shake now triggers immediately on tap (short burst) and continues as long as the button is held; stops on release.
+- Combined mode: to ensure reliability on all titles, the tap/hold shake now drives both IMU pulses and native WIIMOTE_SHAKE_* overrides in sync each half-cycle, with proper clearing.
+- Tap tuning: reduced tap burst duration from ~500 ms to ~250 ms (exactly half) per user feedback; hold cadence unchanged (~7 Hz).
 - Builds:
   - :app:assembleDebug — PASS
   - :app:externalNativeBuildDebug — PASS (C++ changes compiled)
