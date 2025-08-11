@@ -28,11 +28,10 @@ class OverlayEditorDialog : DialogFragment() {
     val buttonControlSpinner: Spinner = view.findViewById(R.id.button_control_spinner)
     val scopeSwitch: CheckBox = view.findViewById(R.id.scope_switch)
     val mappingSpinner: Spinner = view.findViewById(R.id.mapping_spinner)
-    val labelType: TextView = view.findViewById(R.id.label_type)
     val labelMapping: TextView = view.findViewById(R.id.label_mapping)
     val labelMappingType: TextView = view.findViewById(R.id.label_mapping_type)
 
-    val types = listOf("Button", "D-Pad", "Joystick")
+    val types = listOf("Button", "Joystick")
     typeSpinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, types)
 
         val wiimoteButtons = listOf(
@@ -53,11 +52,10 @@ class OverlayEditorDialog : DialogFragment() {
     val mappings = listOf(
         "Control",
         "Action: Toggle Sideways/Upright",
-        "Action: Toggle IR Recenter",
-        "Action: Cycle IR Mode",
-        // Savestates
         "Action: Save State (Quick)",
         "Action: Load State (Quick)",
+        "Action: Recenter IR",
+        "Action: Cycle Quick Save Slot",
         // Unified Wiimote shake action
         "Action: Wiimote Shake"
     )
@@ -66,7 +64,7 @@ class OverlayEditorDialog : DialogFragment() {
         // Default scope: if not checked, save as global instead of doing nothing
         scopeSwitch.isChecked = true
 
-        // Hide irrelevant fields for D-Pad/Joystick; show only for Button
+        // Hide irrelevant fields for Joystick; show only for Button
         fun refreshVisibility() {
             val isButton = typeSpinner.selectedItemPosition == 0
             val vis = if (isButton) View.VISIBLE else View.GONE
@@ -88,18 +86,18 @@ class OverlayEditorDialog : DialogFragment() {
         .setTitle(R.string.overlay_editor_title)
         .setView(view)
             .setPositiveButton(R.string.add) { _, _ ->
-        when (typeSpinner.selectedItemPosition) {
-                    0 -> { // Button
+    when (typeSpinner.selectedItemPosition) {
+            0 -> { // Button
             val idx = buttonControlSpinner.selectedItemPosition
                         val controlId = wiimoteButtons[idx].second
                         val selectedMapIndex = mappingSpinner.selectedItemPosition
                         val isAction = selectedMapIndex != 0
                         val actionKey = when (selectedMapIndex) {
                             1 -> "toggle_sideways"
-                            2 -> "toggle_ir_recenter"
-                            3 -> "cycle_ir_mode"
-                            4 -> "save_state_quick"
-                            5 -> "load_state_quick"
+                            2 -> "save_state_quick"
+                            3 -> "load_state_quick"
+                            4 -> "recenter_ir"
+                            5 -> "cycle_quick_saveslot"
                             6 -> "wiimote_shake"
                             else -> null
                         }
@@ -124,18 +122,7 @@ class OverlayEditorDialog : DialogFragment() {
                         )
                         (activity as? Listener)?.onAddElement(element, scopeSwitch.isChecked)
                     }
-                    1 -> { // D-Pad
-                        val element = OverlayElement.DPad(
-                            id = UUID.randomUUID().toString(),
-                            x = 100, y = 100, scale = 1.0f,
-                            upControlId = ControlId.WIIMOTE_DPAD_UP,
-                            downControlId = ControlId.WIIMOTE_DPAD_DOWN,
-                            leftControlId = ControlId.WIIMOTE_DPAD_LEFT,
-                            rightControlId = ControlId.WIIMOTE_DPAD_RIGHT
-                        )
-                        (activity as? Listener)?.onAddElement(element, scopeSwitch.isChecked)
-                    }
-                    2 -> { // Joystick mapped to IR pointer
+                    1 -> { // Joystick mapped to IR pointer
                         val element = OverlayElement.Joystick(
                             id = UUID.randomUUID().toString(),
                             x = 100, y = 100, scale = 1.0f,

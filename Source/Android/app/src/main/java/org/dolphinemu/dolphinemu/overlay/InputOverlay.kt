@@ -89,6 +89,11 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     private var irJoyActive = false
     private var lastIrJoyTickNanos: Long = 0L
     private var lastShakeNano: Long = 0L
+    // Quick save slot for quick save/load actions (default 9)
+    private var quickSaveSlot: Int = 9
+    // IR joystick kinematics (velocity-based integration)
+    private var irVelX: Float = 0f
+    private var irVelY: Float = 0f
 
     private val preferences: SharedPreferences
         get() =
@@ -494,11 +499,22 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         android.util.Log.d("Overlay", "handleCustomAction key=$actionKey")
         when (actionKey) {
             "toggle_sideways" -> toggleWiimoteSideways()
-            "toggle_ir_recenter" -> toggleIRRecenter()
-            "cycle_ir_mode" -> cycleIRMode()
-            // Savestates quick actions (slot 9)
-            "save_state_quick" -> NativeLibrary.SaveState(9, false)
-            "load_state_quick" -> NativeLibrary.LoadState(9)
+            // Savestates quick actions (configurable slot)
+            "save_state_quick" -> NativeLibrary.SaveState(quickSaveSlot, false)
+            "load_state_quick" -> NativeLibrary.LoadState(quickSaveSlot)
+            // Recenter IR immediately
+            "recenter_ir" -> {
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, 0.0)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, 0.0)
+                overlayPointer?.x = 0f
+                overlayPointer?.y = 0f
+                invalidate()
+            }
+            // Cycle quick save slot (0..9)
+            "cycle_quick_saveslot" -> {
+                quickSaveSlot = (quickSaveSlot + 1) % 10
+                android.util.Log.d("Overlay", "Quick save slot -> $quickSaveSlot")
+            }
             // Wiimote Shake: trigger robust IMU-based shake sequence (works regardless of shake control support)
             "wiimote_shake", "wiimote_shake_x", "wiimote_shake_y", "wiimote_shake_z" -> triggerWiimoteShake()
             else -> {}
@@ -682,7 +698,7 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
 
     private fun drawActionLabels(canvas: Canvas) {
         if (customIdMap.isEmpty()) return
-        // Build a stable ordering of action buttons -> F1, F2, ...
+        // Build a stable ordering of custom action buttons and map labels by actionKey.
         val actionEntries = mutableListOf<Pair<InputOverlayDrawableButton, String>>()
         val customButtons = overlayButtons.filter { isCustom(it) }
         val actionModels = customButtons.mapNotNull { btn ->
@@ -692,11 +708,27 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                 model.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
             ) btn to id else null
         }
-        // Sort by id for stability (or could sort by position)
+        // Sort by id for stability
         val sorted = actionModels.sortedBy { it.second }
         var number = 1
-        for ((btn, _) in sorted) {
-            actionEntries.add(btn to "F$number")
+        for ((btn, id) in sorted) {
+            val model = customElements[id]
+            val label = if (model is OverlayElement.Button) {
+                when (model.actionKey) {
+                    "save_state_quick" -> "sv"
+                    "load_state_quick" -> "ld"
+                    "wiimote_shake" -> "sk"
+                    "toggle_sideways" -> {
+                        val sidewaysSetting = EmulatedController.getSidewaysWiimoteSetting(controllerIndex)
+                        val isSideways = InputMappingBooleanSetting(sidewaysSetting).boolean
+                        if (isSideways) "up" else "sw"
+                    }
+                    "recenter_ir" -> "rc"
+                    "cycle_quick_saveslot" -> ">>"
+                    else -> "F$number"
+                }
+            } else "F$number"
+            actionEntries.add(btn to label)
             number++
         }
         // Draw centered label with size relative to button size
@@ -1814,13 +1846,28 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     ax /= actives.size
                     ay /= actives.size
                 }
-                // Convert to velocity; 
-                val speed = 1.8 // units per second at full tilt to screen edge
-                val dx = (ax * speed * dtSec).toFloat()
-                val dy = (ay * speed * dtSec).toFloat()
+                // Acceleration-driven motion (configurable accel), with damping and bounds
+                val accel = preferences.getFloat("OverlayIrJoyAccel", 3.0f) // units per s^2 at full tilt
+                // Integrate velocity
+                irVelX += (ax * accel * dtSec).toFloat()
+                irVelY += (ay * accel * dtSec).toFloat()
+                // Damping (simple linear friction per second)
+                val frictionPerSec = 2.5f
+                val decay = kotlin.math.max(0f, 1f - frictionPerSec * dtSec.toFloat())
+                irVelX *= decay
+                irVelY *= decay
+                // Clamp velocity to a sane range
+                val maxVel = 1.5f // units per second
+                irVelX = irVelX.coerceIn(-maxVel, maxVel)
+                irVelY = irVelY.coerceIn(-maxVel, maxVel)
                 overlayPointer?.let { p ->
-                    p.x = (p.x + dx).coerceIn(-1f, 1f)
-                    p.y = (p.y + dy).coerceIn(-1f, 1f)
+                    val newX = (p.x + irVelX * dtSec.toFloat()).coerceIn(-1f, 1f)
+                    val newY = (p.y + irVelY * dtSec.toFloat()).coerceIn(-1f, 1f)
+                    // Zero velocity on hitting bounds so cursor doesn't "push" outside
+                    if (newX == -1f || newX == 1f) irVelX = 0f
+                    if (newY == -1f || newY == 1f) irVelY = 0f
+                    p.x = newX
+                    p.y = newY
                     InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, p.x.toDouble())
                     InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, -p.y.toDouble())
                 }
@@ -1835,6 +1882,8 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         irJoyActive = false
         irJoyTick?.let { removeCallbacks(it) }
         irJoyTick = null
+    irVelX = 0f
+    irVelY = 0f
         // Restore recenter behavior depending on setting and presence of IR joystick
         refreshOverlayPointer()
     }
