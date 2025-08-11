@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.view.MotionEvent
+import android.util.Log
 import org.dolphinemu.dolphinemu.features.input.model.InputOverrider
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import kotlin.math.atan2
@@ -61,6 +62,7 @@ class InputOverlayDrawableJoystick(
     private val pressedStateInnerBitmap: BitmapDrawable
     private val boundsBoxBitmap: BitmapDrawable
     private var pressedState = false
+    private var loggedGateWarning = false
 
     var bounds: Rect
         get() = outerBitmap.bounds
@@ -211,7 +213,18 @@ class InputOverlayDrawableJoystick(
 
         val angle = atan2(y, x) + Math.PI + Math.PI
         val radius = hypot(y, x)
-        val maxRadius = InputOverrider.getGateRadiusAtAngle(controllerIndex, xControl, angle)
+        // For IR-mapped joystick, don't query stick gate; clamp to unit circle.
+        val isIr = (xControl == InputOverrider.ControlId.WIIMOTE_IR_X &&
+                yControl == InputOverrider.ControlId.WIIMOTE_IR_Y)
+        val maxRadius = if (isIr) 1.0 else try {
+            InputOverrider.getGateRadiusAtAngle(controllerIndex, xControl, angle)
+        } catch (t: Throwable) {
+            if (!loggedGateWarning) {
+                Log.w("Overlay", "GateRadius fallback (control=$xControl angle=$angle): ${t.message}")
+                loggedGateWarning = true
+            }
+            1.0
+        }
         if (radius > maxRadius) {
             x = maxRadius * cos(angle)
             y = maxRadius * sin(angle)

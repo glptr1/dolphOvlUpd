@@ -31,7 +31,7 @@ sealed class OverlayElement {
         // When mappingType == "action", actionKey must be provided
         val actionKey: String? = null,
         // Optional appearance key, e.g., "wiimote_a", "wiimote_b", "generic"
-        val appearance: String? = null
+    var appearance: String? = null
     ) : OverlayElement() {
         override val type: ElementType = ElementType.BUTTON
     }

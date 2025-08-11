@@ -32,28 +32,34 @@ class OverlayEditorDialog : DialogFragment() {
     val labelMapping: TextView = view.findViewById(R.id.label_mapping)
     val labelMappingType: TextView = view.findViewById(R.id.label_mapping_type)
 
-        val types = listOf("Button", "D-Pad", "Joystick")
+    val types = listOf("Button", "D-Pad", "Joystick")
     typeSpinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, types)
 
         val wiimoteButtons = listOf(
-            Pair("Wiimote A", ControlId.WIIMOTE_A_BUTTON),
-            Pair("Wiimote B", ControlId.WIIMOTE_B_BUTTON),
-            Pair("Wiimote 1", ControlId.WIIMOTE_ONE_BUTTON),
-            Pair("Wiimote 2", ControlId.WIIMOTE_TWO_BUTTON),
-            Pair("Plus", ControlId.WIIMOTE_PLUS_BUTTON),
-            Pair("Minus", ControlId.WIIMOTE_MINUS_BUTTON),
-            Pair("Home", ControlId.WIIMOTE_HOME_BUTTON)
+            // Wiimote core buttons (no D-Pad entries in mapping list)
+            "Wiimote A" to ControlId.WIIMOTE_A_BUTTON,
+            "Wiimote B" to ControlId.WIIMOTE_B_BUTTON,
+            "Wiimote 1" to ControlId.WIIMOTE_ONE_BUTTON,
+            "Wiimote 2" to ControlId.WIIMOTE_TWO_BUTTON,
+            "Wiimote Plus" to ControlId.WIIMOTE_PLUS_BUTTON,
+            "Wiimote Minus" to ControlId.WIIMOTE_MINUS_BUTTON,
+            "Wiimote Home" to ControlId.WIIMOTE_HOME_BUTTON
         )
     val controlLabels = wiimoteButtons.map { it.first }
     val controlAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, controlLabels)
     buttonControlSpinner.adapter = controlAdapter
 
-    // Mapping choices: control vs special actions
+    // Mapping choices: control vs special actions (includes Motion Simulation placeholders)
     val mappings = listOf(
         "Control",
         "Action: Toggle Sideways/Upright",
         "Action: Toggle IR Recenter",
-        "Action: Cycle IR Mode"
+        "Action: Cycle IR Mode",
+        // Savestates
+        "Action: Save State (Quick)",
+        "Action: Load State (Quick)",
+        // Unified Wiimote shake action
+        "Action: Wiimote Shake"
     )
     mappingSpinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, mappings)
 
@@ -92,10 +98,14 @@ class OverlayEditorDialog : DialogFragment() {
                             1 -> "toggle_sideways"
                             2 -> "toggle_ir_recenter"
                             3 -> "cycle_ir_mode"
+                            4 -> "save_state_quick"
+                            5 -> "load_state_quick"
+                            6 -> "wiimote_shake"
                             else -> null
                         }
                         // Infer an appearance from the chosen control so the icon isn't always 'A'
                         val appearanceKey = when (controlId) {
+                            ControlId.WIIMOTE_A_BUTTON -> "wiimote_a"
                             ControlId.WIIMOTE_B_BUTTON -> "wiimote_b"
                             ControlId.WIIMOTE_ONE_BUTTON -> "wiimote_one"
                             ControlId.WIIMOTE_TWO_BUTTON -> "wiimote_two"
@@ -125,12 +135,12 @@ class OverlayEditorDialog : DialogFragment() {
                         )
                         (activity as? Listener)?.onAddElement(element, scopeSwitch.isChecked)
                     }
-                    2 -> { // Joystick (default to Classic left stick; future: add assignment)
+                    2 -> { // Joystick mapped to IR pointer
                         val element = OverlayElement.Joystick(
                             id = UUID.randomUUID().toString(),
                             x = 100, y = 100, scale = 1.0f,
-                            xControlId = ControlId.CLASSIC_LEFT_STICK_X,
-                            yControlId = ControlId.CLASSIC_LEFT_STICK_Y
+                            xControlId = ControlId.WIIMOTE_IR_X,
+                            yControlId = ControlId.WIIMOTE_IR_Y
                         )
                         (activity as? Listener)?.onAddElement(element, scopeSwitch.isChecked)
                     }

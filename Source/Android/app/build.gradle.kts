@@ -120,6 +120,8 @@ android {
     }
 }
 
+// Note: APK renaming is handled post-build via a PowerShell script in CI/local, not in Gradle (AGP API changes).
+
 dependencies {
     baselineProfile(project(":benchmark"))
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")

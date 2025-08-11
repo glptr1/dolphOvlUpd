@@ -91,6 +91,27 @@ const ControlsMap s_wiimote_controls_map = {{
      ControlID::WIIMOTE_IR_X},
     {{WiimoteEmu::Wiimote::IR_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
      ControlID::WIIMOTE_IR_Y},
+  // Shake (override X/Y/Z)
+  {{WiimoteEmu::Wiimote::SHAKE_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_SHAKE_X},
+  {{WiimoteEmu::Wiimote::SHAKE_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_SHAKE_Y},
+  {{WiimoteEmu::Wiimote::SHAKE_GROUP, ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_SHAKE_Z},
+  // IMU Accelerometer (override X/Y/Z)
+  {{WiimoteEmu::Wiimote::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_ACCEL_X},
+  {{WiimoteEmu::Wiimote::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_ACCEL_Y},
+  {{WiimoteEmu::Wiimote::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_ACCEL_Z},
+  // IMU Gyroscope (override X/Y/Z)
+  {{WiimoteEmu::Wiimote::GYROSCOPE_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_GYRO_X},
+  {{WiimoteEmu::Wiimote::GYROSCOPE_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_GYRO_Y},
+  {{WiimoteEmu::Wiimote::GYROSCOPE_GROUP, ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE},
+   ControlID::WIIMOTE_IMU_GYRO_Z},
 }};
 
 const ControlsMap s_nunchuk_controls_map = {{
@@ -102,6 +123,13 @@ const ControlsMap s_nunchuk_controls_map = {{
      ControlID::NUNCHUK_STICK_X},
     {{WiimoteEmu::Nunchuk::STICK_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
      ControlID::NUNCHUK_STICK_Y},
+  // Nunchuk IMU Accelerometer (override X/Y/Z)
+  {{WiimoteEmu::Nunchuk::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE},
+   ControlID::NUNCHUK_IMU_ACCEL_X},
+  {{WiimoteEmu::Nunchuk::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE},
+   ControlID::NUNCHUK_IMU_ACCEL_Y},
+  {{WiimoteEmu::Nunchuk::ACCELEROMETER_GROUP, ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE},
+   ControlID::NUNCHUK_IMU_ACCEL_Z},
 }};
 
 const ControlsMap s_classic_controls_map = {{

@@ -78,5 +78,23 @@ object InputOverrider {
         const val CLASSIC_LEFT_STICK_Y = 53
         const val CLASSIC_RIGHT_STICK_X = 54
         const val CLASSIC_RIGHT_STICK_Y = 55
+
+    // Wiimote IMU overrides
+    const val WIIMOTE_IMU_ACCEL_X = 56
+    const val WIIMOTE_IMU_ACCEL_Y = 57
+    const val WIIMOTE_IMU_ACCEL_Z = 58
+    const val WIIMOTE_IMU_GYRO_X = 59
+    const val WIIMOTE_IMU_GYRO_Y = 60
+    const val WIIMOTE_IMU_GYRO_Z = 61
+
+    // Wiimote Shake direct overrides
+    const val WIIMOTE_SHAKE_X = 62
+    const val WIIMOTE_SHAKE_Y = 63
+    const val WIIMOTE_SHAKE_Z = 64
+
+    // Nunchuk IMU overrides (shifted)
+    const val NUNCHUK_IMU_ACCEL_X = 65
+    const val NUNCHUK_IMU_ACCEL_Y = 66
+    const val NUNCHUK_IMU_ACCEL_Z = 67
     }
 }

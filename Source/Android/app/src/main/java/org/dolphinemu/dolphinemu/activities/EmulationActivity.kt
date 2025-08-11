@@ -528,6 +528,8 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider, OverlayEditorDialo
         val existing = OverlayStorage.load(this) ?: OverlayLayout()
         existing.elements.add(element)
         OverlayStorage.save(this, existing, gameSpecific)
+    // Also mirror to the opposite scope so layout persists regardless of which scope is loaded next
+    OverlayStorage.save(this, existing, !gameSpecific)
         emulationFragment?.refreshInputOverlay()
         Toast.makeText(
             this,
@@ -537,7 +539,9 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider, OverlayEditorDialo
     }
 
     override fun onSaveLayout(gameSpecific: Boolean) {
-        OverlayStorage.save(this, pendingCustomLayout, gameSpecific)
+        // Persist the current layout from disk (fallback to empty) to the requested scope
+        val current = OverlayStorage.load(this) ?: OverlayLayout()
+        OverlayStorage.save(this, current, gameSpecific)
         Toast.makeText(this, if (gameSpecific) getString(R.string.settings_saved_game_specific, NativeLibrary.GetCurrentTitleDescription()) else getString(R.string.settings_saved), Toast.LENGTH_SHORT).show()
     }
 

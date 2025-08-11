@@ -35,12 +35,41 @@ object OverlayStorage {
             add(fileFor(context, null, true))
         }
         val f = files.firstOrNull { it.exists() } ?: return null
-        return runCatching { json.decodeFromString<OverlayLayout>(f.readText()) }.getOrNull()
+        val loaded = runCatching { json.decodeFromString<OverlayLayout>(f.readText()) }.getOrNull()
+            ?: return null
+
+        // One-time migration: clear any non-Wiimote appearance keys to enforce neutral fallback
+        val migrated = migrateAppearances(loaded)
+        if (migrated.second) {
+            // Persist the migrated data back to the same file to avoid repeating work
+            runCatching { f.writeText(json.encodeToString(migrated.first)) }
+        }
+        return migrated.first
     }
 
     fun save(context: Context, layout: OverlayLayout, gameSpecific: Boolean) {
         val gameId = try { NativeLibrary.GetCurrentGameID() } catch (_: Exception) { null }
         val f = fileFor(context, gameId, !gameSpecific)
         f.writeText(json.encodeToString(layout))
+    }
+
+    // Returns Pair(layout, changed)
+    private fun migrateAppearances(layout: OverlayLayout): Pair<OverlayLayout, Boolean> {
+        var changed = false
+        val allowed = setOf(
+            // Allow Wiimote-only icons
+            "wiimote_a", "wiimote_b", "wiimote_one", "wiimote_two",
+            "wiimote_plus", "wiimote_minus", "wiimote_home"
+        )
+        layout.elements.forEach { el ->
+            if (el is OverlayElement.Button) {
+                val ap = el.appearance
+                if (ap != null && !allowed.contains(ap)) {
+                    el.appearance = null
+                    changed = true
+                }
+            }
+        }
+        return layout to changed
     }
 }

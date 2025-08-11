@@ -108,6 +108,49 @@ void EmulateShake(PositionalState* state, ControllerEmu::Shake* const shake_grou
   ApproachPositionWithJerk(state, target_position, jerk, time_elapsed);
 }
 
+void EmulateShake(PositionalState* state, ControllerEmu::Shake* const shake_group,
+                  const ControllerEmu::InputOverrideFunction& override_func,
+                  float time_elapsed)
+{
+  // Start from the current adjusted state and apply overrides if provided
+  auto raw = shake_group->GetState();
+  if (override_func)
+  {
+    if (const auto x = override_func(shake_group->name,
+                                     ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE, raw.x))
+      raw.x = *x;
+    if (const auto y = override_func(shake_group->name,
+                                     ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE, raw.y))
+      raw.y = *y;
+    if (const auto z = override_func(shake_group->name,
+                                     ControllerEmu::ReshapableInput::Z_INPUT_OVERRIDE, raw.z))
+      raw.z = *z;
+  }
+
+  // Construct a target_position like the base version using the overridden state
+  auto target_position = raw * float(shake_group->GetIntensity() / 2);
+  for (std::size_t i = 0; i != target_position.data.size(); ++i)
+  {
+    if (state->velocity.data[i] * std::copysign(1.f, target_position.data[i]) < 0 ||
+        (target_position.data[i] != 0 && state->position.data[i] / target_position.data[i] > 0.5))
+    {
+      target_position.data[i] *= -1;
+    }
+  }
+
+  const auto travel_time = 1 / shake_group->GetFrequency() / 2;
+  Common::Vec3 jerk;
+  for (std::size_t i = 0; i != target_position.data.size(); ++i)
+  {
+    const auto half_distance =
+        std::max(std::abs(target_position.data[i]), std::abs(state->position.data[i]));
+
+    jerk.data[i] = half_distance / std::pow(travel_time / 2, 3);
+  }
+
+  ApproachPositionWithJerk(state, target_position, jerk, time_elapsed);
+}
+
 void EmulateTilt(RotationalState* state, ControllerEmu::Tilt* const tilt_group, float time_elapsed)
 {
   const auto target = tilt_group->GetState();

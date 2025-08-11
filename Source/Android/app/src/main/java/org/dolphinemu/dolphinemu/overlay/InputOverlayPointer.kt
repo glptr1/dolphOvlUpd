@@ -31,6 +31,7 @@ class InputOverlayPointer(
 
     private var doubleTap = false
     private var trackId = -1
+    // PREVENT_RECENTER is declared in the companion object below
 
     init {
         gameCenterX = (surfacePosition.left + surfacePosition.right) / 2f
@@ -75,7 +76,7 @@ class InputOverlayPointer(
                     trackId = -1
                 if (mode == MODE_DRAG)
                     updateOldAxes()
-                if (recenter)
+                if (recenter && !PREVENT_RECENTER)
                     reset()
             }
         }
@@ -136,6 +137,9 @@ class InputOverlayPointer(
         const val MODE_DISABLED = 0
         const val MODE_FOLLOW = 1
         const val MODE_DRAG = 2
+
+    // This flag allows the overlay to temporarily prevent recenter on joystick activity
+    var PREVENT_RECENTER: Boolean = false
 
         @JvmField
         var DOUBLE_TAP_OPTIONS = arrayListOf(

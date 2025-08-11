@@ -68,12 +68,30 @@ enum ControlID
   CLASSIC_RIGHT_STICK_X = 54,
   CLASSIC_RIGHT_STICK_Y = 55,
 
+  // Wiimote IMU override channels
+  WIIMOTE_IMU_ACCEL_X = 56,
+  WIIMOTE_IMU_ACCEL_Y = 57,
+  WIIMOTE_IMU_ACCEL_Z = 58,
+  WIIMOTE_IMU_GYRO_X = 59,
+  WIIMOTE_IMU_GYRO_Y = 60,
+  WIIMOTE_IMU_GYRO_Z = 61,
+
+  // Wiimote Shake direct override (ControllerEmu::Shake X/Y/Z)
+  WIIMOTE_SHAKE_X = 62,
+  WIIMOTE_SHAKE_Y = 63,
+  WIIMOTE_SHAKE_Z = 64,
+
+  // Nunchuk IMU override channels
+  NUNCHUK_IMU_ACCEL_X = 65,
+  NUNCHUK_IMU_ACCEL_Y = 66,
+  NUNCHUK_IMU_ACCEL_Z = 67,
+
   NUMBER_OF_CONTROLS,
 
   FIRST_GC_CONTROL = GCPAD_A_BUTTON,
   LAST_GC_CONTROL = GCPAD_C_STICK_Y,
   FIRST_WII_CONTROL = WIIMOTE_A_BUTTON,
-  LAST_WII_CONTROL = CLASSIC_RIGHT_STICK_Y,
+  LAST_WII_CONTROL = NUNCHUK_IMU_ACCEL_Z,
 
 };
 void RegisterGameCubeInputOverrider(int controller_index);

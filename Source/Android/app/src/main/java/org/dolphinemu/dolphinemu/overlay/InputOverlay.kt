@@ -70,12 +70,25 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     private val customElements = mutableMapOf<String, OverlayElement>()
     private var lastTapTime: Long = 0L
     private var lastTappedObject: Any? = null
+    // Hold-shake state (Y-axis only) for action button
+    private var shakeHoldActive = false
+    private var shakeHoldPolarity = 1.0
+    private var shakeHoldRunnable: Runnable? = null
+    // Pending delayed start for hold-shake (to distinguish tap vs hold)
+    private var shakeHoldStartPending: Runnable? = null
     // Paint for drawing action labels (F1, F2, ...)
     private val actionTextPaint: Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
         setShadowLayer(4f, 0f, 0f, Color.BLACK)
     }
+    // Joystick-driven IR recenter timer (8s after last activity)
+    private var irRecenterRunnable: Runnable? = null
+    // Joystick-driven IR velocity updater (60 Hz)
+    private var irJoyTick: Runnable? = null
+    private var irJoyActive = false
+    private var lastIrJoyTickNanos: Long = 0L
+    private var lastShakeNano: Long = 0L
 
     private val preferences: SharedPreferences
         get() =
@@ -132,6 +145,10 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
             BooleanSetting.MAIN_IR_ALWAYS_RECENTER.boolean,
             controllerIndex
         )
+        // If there is an IR-mapped joystick present, disable always-recenter to avoid snapback
+        if (hasIRJoystick()) {
+            overlayPointer?.setRecenter(false)
+        }
     }
 
     override fun draw(canvas: Canvas) {
@@ -190,24 +207,43 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                             if (model is OverlayElement.Button &&
                                 model.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
                             ) {
-                                // Perform special action, do not send any control
-                                handleCustomAction(model.actionKey)
+                                // Actions: some are instant, some are hold-based
+                                when (model.actionKey) {
+                                    "wiimote_shake" -> {
+                                        // Tap: immediate short IMU-only burst; Hold: start after a short delay if still pressed
+                                        triggerWiimoteShake()
+                                        // Cancel any previous pending starter
+                                        shakeHoldStartPending?.let { removeCallbacks(it) }
+                                        val downPointerId = event.getPointerId(pointerIndex)
+                                        val pending = Runnable {
+                                            // Start hold only if this button is still pressed by the same pointer
+                                            if (button.getPressedState() && button.trackId == downPointerId) {
+                                                startWiimoteShakeHoldY()
+                                            }
+                                        }
+                                        shakeHoldStartPending = pending
+                                        // Small threshold to differentiate tap from hold
+                                        postDelayed(pending, 150L)
+                                    }
+                                    else -> handleCustomAction(model.actionKey)
+                                }
                             } else {
-                                // Custom but control-mapped: prefer model.controlId if present
-                                val ctl = if (model is OverlayElement.Button) (model.controlId
-                                    ?: button.control) else button.control
-                                InputOverrider.setControlState(
-                                    controllerIndex,
-                                    ctl,
-                                    if (button.getPressedState()) 1.0 else 0.0
-                                )
-                                val analogControl = getAnalogControlForTrigger(ctl)
-                                if (analogControl >= 0)
+                                // Custom but control-mapped: require a valid controlId; do not fall back to a stock control
+                                val ctl = (model as? OverlayElement.Button)?.controlId ?: -1
+                                if (ctl >= 0) {
                                     InputOverrider.setControlState(
                                         controllerIndex,
-                                        analogControl,
-                                        1.0
+                                        ctl,
+                                        if (button.getPressedState()) 1.0 else 0.0
                                     )
+                                    val analogControl = getAnalogControlForTrigger(ctl)
+                                    if (analogControl >= 0)
+                                        InputOverrider.setControlState(
+                                            controllerIndex,
+                                            analogControl,
+                                            1.0
+                                        )
+                                }
                             }
                         } else {
                             // Stock button
@@ -254,25 +290,58 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                             // Custom: Only release if this is a control-mapped button
                             val elId = customIdMap[button] ?: ""
                             val model = customElements[elId]
-                            if (model is OverlayElement.Button &&
-                                model.mappingType != org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION
-                            ) {
-                                val ctl = model.controlId ?: button.control
-                                InputOverrider.setControlState(
-                                    controllerIndex,
-                                    ctl,
-                                    if (button.getPressedState()) 1.0 else 0.0
-                                )
-                                val analogControl = getAnalogControlForTrigger(ctl)
-                                if (analogControl >= 0)
-                                    InputOverrider.setControlState(
-                                        controllerIndex,
-                                        analogControl,
-                                        0.0
-                                    )
+                            if (model is OverlayElement.Button) {
+                                if (model.mappingType != org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION) {
+                                    val ctl = model.controlId ?: -1
+                                    if (ctl >= 0) {
+                                        InputOverrider.setControlState(
+                                            controllerIndex,
+                                            ctl,
+                                            if (button.getPressedState()) 1.0 else 0.0
+                                        )
+                                        val analogControl = getAnalogControlForTrigger(ctl)
+                                        if (analogControl >= 0)
+                                            InputOverrider.setControlState(
+                                                controllerIndex,
+                                                analogControl,
+                                                0.0
+                                            )
+                                    }
+                                } else {
+                                    // Action button release: stop any hold-based action
+                                    when (model.actionKey) {
+                                        "wiimote_shake" -> {
+                                            // Cancel any pending delayed starter and stop hold if it was started
+                                            shakeHoldStartPending?.let { removeCallbacks(it) }
+                                            shakeHoldStartPending = null
+                                            android.util.Log.i("Overlay", "Shake HOLD stop")
+                                            stopWiimoteShakeHoldY()
+                                        }
+                                    }
+                                }
                             }
                         }
 
+                        button.trackId = -1
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    // Cancel and clear any in-flight actions for this button
+                    if (button.trackId != -1) {
+                        if (!button.latching)
+                            button.setPressedState(false)
+                        if (isCustom(button)) {
+                            val elId = customIdMap[button] ?: ""
+                            val model = customElements[elId]
+                            if (model is OverlayElement.Button &&
+                                model.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.ACTION &&
+                                model.actionKey == "wiimote_shake"
+                            ) {
+                                shakeHoldStartPending?.let { removeCallbacks(it) }
+                                shakeHoldStartPending = null
+                                stopWiimoteShakeHoldY()
+                            }
+                        }
                         button.trackId = -1
                     }
                 }
@@ -356,26 +425,53 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
             }
         }
 
-        for (joystick in overlayJoysticks) {
-            if (joystick.trackEvent(event)) {
-                if (joystick.trackId != -1)
-                    pressed = true
+    // Assume no joystick engagement to start; will flip if any is active
+    var anyJoystickActive = false
+    for (joystick in overlayJoysticks) {
+            joystick.trackEvent(event)
+            if (joystick.trackId != -1) {
+                pressed = true
+                anyJoystickActive = true
+                // Cancel any pending delayed recenter since we are actively using the joystick
+                irRecenterRunnable?.let {
+                    removeCallbacks(it)
+                    irRecenterRunnable = null
+                    android.util.Log.d("Overlay", "IR joystick: canceled pending delayed recenter due to activity")
+                }
             }
-
-            InputOverrider.setControlState(
-                controllerIndex,
-                joystick.xControl,
-                joystick.x.toDouble()
-            )
-            InputOverrider.setControlState(
-                controllerIndex,
-                joystick.yControl,
-                -joystick.y.toDouble()
-            )
         }
+    // Update pointer recenter prevention flag
+    InputOverlayPointer.PREVENT_RECENTER = anyJoystickActive
 
-        // No button/joystick pressed, safe to move pointer
-        if (!pressed && overlayPointer != null) {
+    // Start/stop the IR joystick velocity ticker based on activity
+    if (anyJoystickActive && !irJoyActive) {
+        startIrJoystickTicker()
+    } else if (!anyJoystickActive && irJoyActive) {
+        stopIrJoystickTicker()
+    }
+
+    // If joystick became inactive, schedule a delayed recenter after 8 seconds
+    if (!anyJoystickActive && irRecenterRunnable == null) {
+        irRecenterRunnable = Runnable {
+            // Recheck: only recenter if still no joystick active
+            val stillInactive = overlayJoysticks.none { it.trackId != -1 }
+            if (stillInactive) {
+                android.util.Log.d("Overlay", "IR joystick: performing delayed recenter after 8s of inactivity")
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, 0.0)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, 0.0)
+                overlayPointer?.x = 0f
+                overlayPointer?.y = 0f
+            } else {
+                android.util.Log.d("Overlay", "IR joystick: skip delayed recenter, joystick re-activated")
+            }
+            irRecenterRunnable = null
+        }
+        android.util.Log.d("Overlay", "IR joystick: scheduled delayed recenter in 8s")
+        postDelayed(irRecenterRunnable!!, 8000L)
+    }
+
+    // No button/joystick pressed, safe to move pointer
+    if (!pressed && overlayPointer != null) {
             overlayPointer!!.onTouch(event)
             InputOverrider.setControlState(
                 controllerIndex,
@@ -395,12 +491,170 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     }
 
     private fun handleCustomAction(actionKey: String?) {
+        android.util.Log.d("Overlay", "handleCustomAction key=$actionKey")
         when (actionKey) {
             "toggle_sideways" -> toggleWiimoteSideways()
             "toggle_ir_recenter" -> toggleIRRecenter()
             "cycle_ir_mode" -> cycleIRMode()
+            // Savestates quick actions (slot 9)
+            "save_state_quick" -> NativeLibrary.SaveState(9, false)
+            "load_state_quick" -> NativeLibrary.LoadState(9)
+            // Wiimote Shake: trigger robust IMU-based shake sequence (works regardless of shake control support)
+            "wiimote_shake", "wiimote_shake_x", "wiimote_shake_y", "wiimote_shake_z" -> triggerWiimoteShake()
             else -> {}
         }
+    }
+
+    private fun triggerWiimoteShake() {
+        // Debounce: ignore if another burst started too recently to avoid overlapping schedules
+        val now = System.nanoTime()
+        if (now - lastShakeNano < 80_000_000L) { // 80 ms
+            return
+        }
+        lastShakeNano = now
+        // Clear any residual IMU channels from a prior burst/hold
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Y)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
+        // Lower-frequency, strong alternating burst to better match "shake" detection.
+        // About 7 Hz, ~500 ms total, with 60% duty per half-cycle.
+        val amp = 32.0  // ~3.3 g
+        val gyro = 22.0 // rad/s scale used by core
+        val freqHz = 7.0
+        val halfPeriodMs = Math.max(16L, Math.round(1000.0 / (2.0 * freqHz))) // ~71 ms
+        val onMs = (halfPeriodMs * 0.6).toLong() // ~60% on, 40% off each half
+        val total = 500L
+
+    android.util.Log.d("Overlay", "shake burst start total=${total}ms, half=${halfPeriodMs}ms")
+        var t = 0L
+        var sign = 1.0
+        while (t < total) {
+            // Start of half-cycle: apply impulse predominantly on X, assist on Z
+            val sx = amp * sign
+            val sz = amp * 0.6 * -sign // slight counter-axis to create richer profile
+            val gx = gyro * sign
+            val gz = gyro * 0.6 * -sign
+            postDelayed({
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X, sx)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z, sz)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X, gx)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z, gz)
+                // Native shake assist: drive shake group overrides in tandem
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_X, if (sign > 0) 1.0 else -1.0)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_Z, if (sign < 0) 1.0 else -1.0)
+            }, t)
+            // Clear near the end of this half-cycle
+            postDelayed({
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_X)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_Z)
+            }, t + onMs)
+
+            // Next half
+            sign = -sign
+            t += halfPeriodMs
+        }
+        postDelayed({ android.util.Log.d("Overlay", "shake burst end") }, total + 10L)
+    }
+
+    // Hold-based shake while the button is pressed (random X/Z impulses + gyro)
+    private fun startWiimoteShakeHoldY() {
+        if (shakeHoldActive) return
+        shakeHoldActive = true
+        shakeHoldPolarity = 1.0
+        shakeHoldRunnable?.let { removeCallbacks(it) }
+
+        // ~7 Hz alternating shake while held, with clear between pulses.
+        val amp = 32.0
+        val gyro = 22.0
+        val halfPeriodMs = Math.max(16L, Math.round(1000.0 / (2.0 * 7.0)))
+        val onMs = (halfPeriodMs * 0.6).toLong()
+
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Y)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y)
+
+    val loop = object : Runnable {
+            override fun run() {
+                if (!shakeHoldActive) return
+
+                val sign = if (shakeHoldPolarity >= 0) 1.0 else -1.0
+                val sx = amp * sign
+                val sz = amp * 0.6 * -sign
+                val gx = gyro * sign
+                val gz = gyro * 0.6 * -sign
+
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X, sx)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z, sz)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X, gx)
+                InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z, gz)
+        // Native shake assist alongside IMU
+        InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_X, if (sign > 0) 1.0 else -1.0)
+        InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_Z, if (sign < 0) 1.0 else -1.0)
+
+                postDelayed({
+                    if (shakeHoldActive) {
+                        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X)
+                        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z)
+                        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
+                        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
+            InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_X)
+            InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_Z)
+                    }
+                }, onMs)
+
+                // Flip polarity next half-cycle
+                shakeHoldPolarity = -shakeHoldPolarity
+                postDelayed(this, halfPeriodMs)
+            }
+        }
+        shakeHoldRunnable = loop
+        post(loop)
+    }
+
+    private fun stopWiimoteShakeHoldY() {
+        if (!shakeHoldActive) return
+        android.util.Log.d("Overlay", "shake hold Y STOP")
+        shakeHoldActive = false
+        shakeHoldRunnable = null
+    // best-effort clear
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Y)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z)
+        InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
+    InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_X)
+    InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_SHAKE_Z)
+    }
+
+    // Helpers to briefly override IMU channels; values are in game-friendly units
+    private fun pulseWiimoteAccel(x: Double, y: Double, z: Double, gyroX: Double = 0.0, gyroY: Double = 0.0, gyroZ: Double = 0.0) {
+        // Apply overrides for ~1 frame; core samples at ~200 Hz, so a single call is often enough
+        InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X, x)
+        InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Y, y)
+        InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z, z)
+        if (gyroX != 0.0 || gyroY != 0.0 || gyroZ != 0.0) {
+            InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X, gyroX)
+            InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y, gyroY)
+            InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z, gyroZ)
+        }
+        // Schedule clear after a short delay to create an impulse
+        postDelayed({
+            InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_X)
+            InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Y)
+            InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_ACCEL_Z)
+            if (gyroX != 0.0 || gyroY != 0.0 || gyroZ != 0.0) {
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_X)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Y)
+                InputOverrider.clearControlState(controllerIndex, ControlId.WIIMOTE_IMU_GYRO_Z)
+            }
+        }, 16L)
     }
 
     private fun toggleIRRecenter() {
@@ -685,10 +939,11 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
 
     private fun addCustomButton(el: OverlayElement.Button, orientation: String) {
         // Choose visuals; if no explicit appearance, infer from controlId for common Wiimote buttons
-        val inferredAppearance: String? = if (el.appearance == null &&
+    val inferredAppearance: String? = if (el.appearance == null &&
             el is OverlayElement.Button && el.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.CONTROL
         ) {
             when (el.controlId) {
+        ControlId.WIIMOTE_A_BUTTON -> "wiimote_a"
                 ControlId.WIIMOTE_B_BUTTON -> "wiimote_b"
                 ControlId.WIIMOTE_ONE_BUTTON -> "wiimote_one"
                 ControlId.WIIMOTE_TWO_BUTTON -> "wiimote_two"
@@ -700,25 +955,28 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         } else el.appearance
 
         val def = when (inferredAppearance) {
+            "wiimote_a" -> R.drawable.wiimote_a
             "wiimote_b" -> R.drawable.wiimote_b
             "wiimote_one" -> R.drawable.wiimote_one
             "wiimote_two" -> R.drawable.wiimote_two
             "wiimote_plus" -> R.drawable.wiimote_plus
             "wiimote_minus" -> R.drawable.wiimote_minus
             "wiimote_home" -> R.drawable.wiimote_home
-            else -> R.drawable.wiimote_a
+            else -> 0
         }
         val press = when (inferredAppearance) {
+            "wiimote_a" -> R.drawable.wiimote_a_pressed
             "wiimote_b" -> R.drawable.wiimote_b_pressed
             "wiimote_one" -> R.drawable.wiimote_one_pressed
             "wiimote_two" -> R.drawable.wiimote_two_pressed
             "wiimote_plus" -> R.drawable.wiimote_plus_pressed
             "wiimote_minus" -> R.drawable.wiimote_minus_pressed
             "wiimote_home" -> R.drawable.wiimote_home_pressed
-            else -> R.drawable.wiimote_a_pressed
+            else -> 0
         }
         // Map appearance to a sensible legacyId for sizing. Defaults to Wiimote A.
         val legacyIdForScale = when (inferredAppearance) {
+            "wiimote_a" -> ButtonType.WIIMOTE_BUTTON_A
             "wiimote_b" -> ButtonType.WIIMOTE_BUTTON_B
             "wiimote_one" -> ButtonType.WIIMOTE_BUTTON_1
             "wiimote_two" -> ButtonType.WIIMOTE_BUTTON_2
@@ -727,10 +985,15 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
             "wiimote_home" -> ButtonType.WIIMOTE_BUTTON_HOME
             else -> ButtonType.WIIMOTE_BUTTON_A
         }
-        // For ACTION-mapped buttons, do not bind to a control; use -1 sentinel
+        // For CONTROL-mapped buttons, require a provided controlId; for ACTION, use -1 sentinel.
         val control = if (el.mappingType == org.dolphinemu.dolphinemu.overlay.editor.MappingType.CONTROL)
-            (el.controlId ?: ControlId.WIIMOTE_A_BUTTON) else -1
-        val btn = initializeOverlayButton(context, def, press, /*legacyId*/ legacyIdForScale, control, orientation, false)
+            (el.controlId ?: -1) else -1
+        val btn = if (def == 0 || press == 0) {
+            // Generate a neutral generic circular button
+            initializeOverlayButtonGeneric(context, legacyIdForScale, control, orientation, false)
+        } else {
+            initializeOverlayButton(context, def, press, /*legacyId*/ legacyIdForScale, control, orientation, false)
+        }
         // Override with custom position/scale
         val width = (btn.width * el.scale).toInt().coerceAtLeast(1)
         val height = (btn.height * el.scale).toInt().coerceAtLeast(1)
@@ -740,6 +1003,99 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         btn.setPosition(left, top)
         overlayButtons.add(btn)
         customIdMap[btn] = el.id
+    }
+
+    // Create a generic circular button with dynamic scaling and theme-aware colors
+    private fun initializeOverlayButtonGeneric(
+        context: Context,
+        legacyId: Int,
+        control: Int,
+        orientation: String,
+        latching: Boolean
+    ): InputOverlayDrawableButton {
+        // Copy scale logic from initializeOverlayButton
+        var scale = when (legacyId) {
+            ButtonType.BUTTON_A,
+            ButtonType.WIIMOTE_BUTTON_B,
+            ButtonType.NUNCHUK_BUTTON_Z -> 0.2f
+
+            ButtonType.BUTTON_X,
+            ButtonType.BUTTON_Y -> 0.175f
+
+            ButtonType.BUTTON_Z,
+            ButtonType.TRIGGER_L,
+            ButtonType.TRIGGER_R -> 0.225f
+
+            ButtonType.BUTTON_START -> 0.075f
+            ButtonType.WIIMOTE_BUTTON_1,
+            ButtonType.WIIMOTE_BUTTON_2 -> if (controllerType == OVERLAY_WIIMOTE_SIDEWAYS) 0.14f else 0.0875f
+
+            ButtonType.WIIMOTE_BUTTON_PLUS,
+            ButtonType.WIIMOTE_BUTTON_MINUS,
+            ButtonType.WIIMOTE_BUTTON_HOME,
+            ButtonType.CLASSIC_BUTTON_PLUS,
+            ButtonType.CLASSIC_BUTTON_MINUS,
+            ButtonType.CLASSIC_BUTTON_HOME -> 0.0625f
+
+            ButtonType.CLASSIC_TRIGGER_L,
+            ButtonType.CLASSIC_TRIGGER_R,
+            ButtonType.CLASSIC_BUTTON_ZL,
+            ButtonType.CLASSIC_BUTTON_ZR -> 0.25f
+
+            else -> 0.125f
+        }
+        scale *= (IntSetting.MAIN_CONTROL_SCALE.int + 50).toFloat()
+        scale /= 100f
+
+        // Base size for the generator; resized by resizeBitmap afterward
+        val baseSize = 256
+        val defaultColor = Color.parseColor("#E0E0E0") // light gray
+        val ringColor = Color.parseColor("#B0B0B0")
+        val pressedColor = Color.parseColor("#BDBDBD") // darker gray
+        val pressedRingColor = Color.parseColor("#8C8C8C")
+
+        val defaultBitmapBase = createCircularButtonBitmap(baseSize, defaultColor, ringColor)
+        val pressedBitmapBase = createCircularButtonBitmap(baseSize, pressedColor, pressedRingColor)
+
+        val defaultStateBitmap = resizeBitmap(context, defaultBitmapBase, scale)
+        val pressedStateBitmap = resizeBitmap(context, pressedBitmapBase, scale)
+
+        val overlayDrawable = InputOverlayDrawableButton(
+            resources,
+            defaultStateBitmap,
+            pressedStateBitmap,
+            legacyId,
+            control,
+            latching
+        )
+
+        // Default initial bounds; caller will override position/size
+        val width = overlayDrawable.width
+        val height = overlayDrawable.height
+        overlayDrawable.setBounds(0, 0, width, height)
+        overlayDrawable.setPosition(0, 0)
+        overlayDrawable.setOpacity(IntSetting.MAIN_CONTROL_OPACITY.int * 255 / 100)
+
+        return overlayDrawable
+    }
+
+    private fun createCircularButtonBitmap(sizePx: Int, fillColor: Int, ringColor: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val center = sizePx / 2f
+        val radius = center * 0.92f
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        // Outer subtle ring
+        paint.style = Paint.Style.FILL
+        paint.color = ringColor
+        canvas.drawCircle(center, center, radius, paint)
+
+        // Inner fill
+        paint.color = fillColor
+        canvas.drawCircle(center, center, radius * 0.92f, paint)
+
+        return bmp
     }
 
     private fun addCustomDpad(el: OverlayElement.DPad, orientation: String) {
@@ -766,14 +1122,18 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     }
 
     private fun addCustomJoystick(el: OverlayElement.Joystick, orientation: String) {
-        val joy = initializeOverlayJoystick(
+        // Default to IR axes if element has invalid control ids
+        val xCtrl = if (el.xControlId > 0) el.xControlId else ControlId.WIIMOTE_IR_X
+        val yCtrl = if (el.yControlId > 0) el.yControlId else ControlId.WIIMOTE_IR_Y
+    android.util.Log.d("Overlay", "addCustomJoystick xCtrl=$xCtrl yCtrl=$yCtrl (IR=${xCtrl==ControlId.WIIMOTE_IR_X && yCtrl==ControlId.WIIMOTE_IR_Y})")
+    val joy = initializeOverlayJoystick(
             context,
             R.drawable.gcwii_joystick_range,
             R.drawable.gcwii_joystick,
             R.drawable.gcwii_joystick_pressed,
             /*legacyId*/ ButtonType.NUNCHUK_STICK,
-            el.xControlId,
-            el.yControlId,
+            xCtrl,
+            yCtrl,
             orientation
         )
         val left = el.x
@@ -1422,8 +1782,61 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
     fun refreshOverlayPointer() {
         if (overlayPointer != null) {
             overlayPointer?.setMode(IntSetting.MAIN_IR_MODE.int)
-            overlayPointer?.setRecenter(BooleanSetting.MAIN_IR_ALWAYS_RECENTER.boolean)
+            val recenter = if (hasIRJoystick()) false else BooleanSetting.MAIN_IR_ALWAYS_RECENTER.boolean
+            overlayPointer?.setRecenter(recenter)
         }
+    }
+
+    private fun hasIRJoystick(): Boolean = overlayJoysticks.any {
+        it.xControl == ControlId.WIIMOTE_IR_X && it.yControl == ControlId.WIIMOTE_IR_Y
+    }
+
+    private fun startIrJoystickTicker() {
+        if (irJoyActive) return
+        if (overlayPointer == null) return
+        irJoyActive = true
+        lastIrJoyTickNanos = System.nanoTime()
+        // Disable always recenter while joystick driving is active
+        overlayPointer?.setRecenter(false)
+        irJoyTick = object : Runnable {
+            override fun run() {
+                if (!irJoyActive) return
+                val now = System.nanoTime()
+                val dtSec = ((now - lastIrJoyTickNanos).coerceAtLeast(1_000_000L)).toDouble() / 1_000_000_000.0
+                lastIrJoyTickNanos = now
+
+                // Combine all active IR joysticks (if multiple, average)
+                val actives = overlayJoysticks.filter { it.trackId != -1 && it.xControl == ControlId.WIIMOTE_IR_X && it.yControl == ControlId.WIIMOTE_IR_Y }
+                var ax = 0.0
+                var ay = 0.0
+                if (actives.isNotEmpty()) {
+                    for (j in actives) { ax += j.x; ay += j.y }
+                    ax /= actives.size
+                    ay /= actives.size
+                }
+                // Convert to velocity; 
+                val speed = 1.8 // units per second at full tilt to screen edge
+                val dx = (ax * speed * dtSec).toFloat()
+                val dy = (ay * speed * dtSec).toFloat()
+                overlayPointer?.let { p ->
+                    p.x = (p.x + dx).coerceIn(-1f, 1f)
+                    p.y = (p.y + dy).coerceIn(-1f, 1f)
+                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, p.x.toDouble())
+                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, -p.y.toDouble())
+                }
+                // Schedule next tick
+                postDelayed(this, 16L)
+            }
+        }
+        post(irJoyTick!!)
+    }
+
+    private fun stopIrJoystickTicker() {
+        irJoyActive = false
+        irJoyTick?.let { removeCallbacks(it) }
+        irJoyTick = null
+        // Restore recenter behavior depending on setting and presence of IR joystick
+        refreshOverlayPointer()
     }
 
     fun resetButtonPlacement() {
@@ -1895,7 +2308,7 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
         display.getMetrics(outMetrics)
         var maxX = outMetrics.heightPixels.toFloat()
         var maxY = outMetrics.widthPixels.toFloat()
-        // Height and width changes depending on orientation. Use the larger value for height.
+        // Height and width changes depending on orientation. Use the larger value for maxX.
         if (maxY < maxX) {
             val tmp = maxX
             maxX = maxY

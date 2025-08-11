@@ -123,6 +123,8 @@ public:
   static constexpr const char* ACCELEROMETER_GROUP = "IMUAccelerometer";
   static constexpr const char* GYROSCOPE_GROUP = "IMUGyroscope";
   static constexpr const char* IR_GROUP = "IR";
+  // Name used for the Shake control group
+  static constexpr const char* SHAKE_GROUP = _trans("Shake");
   static constexpr const char* IR_PASSTHROUGH_GROUP = "IRPassthrough";
 
   static constexpr const char* A_BUTTON = "A";
