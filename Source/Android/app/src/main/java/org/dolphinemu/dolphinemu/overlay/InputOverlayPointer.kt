@@ -92,6 +92,15 @@ class InputOverlayPointer(
             x = oldX + (event.getX(eventPointerIndex) - touchStartX) * gameWidthHalfInv
             y = oldY + (event.getY(eventPointerIndex) - touchStartY) * gameHeightHalfInv
         }
+        // Clamp to content bounds with horizontal margin to avoid side bars
+    val horizontalMargin = 0.20f
+    val xMin = -1f + horizontalMargin
+    val xMax = 1f - horizontalMargin
+    // Soft zone easing: just clamp for touch (no velocity), but prevent overshoot entirely
+    if (x < xMin) x = xMin
+    if (x > xMax) x = xMax
+    if (y < -1f) y = -1f
+    if (y > 1f) y = 1f
     }
 
     private fun touchPress() {

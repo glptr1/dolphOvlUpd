@@ -514,6 +514,9 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
             "cycle_quick_saveslot" -> {
                 quickSaveSlot = (quickSaveSlot + 1) % 10
                 android.util.Log.d("Overlay", "Quick save slot -> $quickSaveSlot")
+                try {
+                    Toast.makeText(context, "Quick slot: $quickSaveSlot", Toast.LENGTH_SHORT).show()
+                } catch (_: Throwable) { /* ignore if context not UI-bound */ }
             }
             // Wiimote Shake: trigger robust IMU-based shake sequence (works regardless of shake control support)
             "wiimote_shake", "wiimote_shake_x", "wiimote_shake_y", "wiimote_shake_z" -> triggerWiimoteShake()
@@ -1846,30 +1849,72 @@ class InputOverlay(context: Context?, attrs: AttributeSet?) : SurfaceView(contex
                     ax /= actives.size
                     ay /= actives.size
                 }
-                // Acceleration-driven motion (configurable accel), with damping and bounds
-                val accel = preferences.getFloat("OverlayIrJoyAccel", 3.0f) // units per s^2 at full tilt
+                // Motion parameters from prefs
+                val accel = run {
+                    val alt = context?.getSharedPreferences("OverlayPrefs", 0)?.getFloat("OverlayIrJoyAccel", -1f) ?: -1f
+                    if (alt > 0f) alt else preferences.getFloat("OverlayIrJoyAccel", 3.0f)
+                }
+                val speedScale = run {
+                    val alt = context?.getSharedPreferences("OverlayPrefs", 0)?.getFloat("OverlayIrJoyMaxVel", -1f) ?: -1f
+                    if (alt > 0f) alt else 1.5f
+                }
+                val accelEff = accel * speedScale // speed setting also boosts accel for clearer feel
                 // Integrate velocity
-                irVelX += (ax * accel * dtSec).toFloat()
-                irVelY += (ay * accel * dtSec).toFloat()
+                // Bootstrap: if user starts moving from rest, apply an initial minimum speed so motion feels immediate
+                val inputMag = kotlin.math.sqrt((ax * ax + ay * ay).toFloat())
+                val minStartSpeed = 0.18f * speedScale // chosen baseline
+                if (inputMag > 0.05f && kotlin.math.abs(irVelX) + kotlin.math.abs(irVelY) < 0.02f) {
+                    val normX = (ax / (inputMag.toDouble().coerceAtLeast(1e-6))).toFloat()
+                    val normY = (ay / (inputMag.toDouble().coerceAtLeast(1e-6))).toFloat()
+                    irVelX = normX * minStartSpeed
+                    irVelY = normY * minStartSpeed
+                } else {
+                    irVelX += (ax * accelEff * dtSec).toFloat()
+                    irVelY += (ay * accelEff * dtSec).toFloat()
+                }
                 // Damping (simple linear friction per second)
-                val frictionPerSec = 2.5f
+                // Tune down friction so accel/speed presets have a clearer effect
+                val frictionPerSec = 1.2f
                 val decay = kotlin.math.max(0f, 1f - frictionPerSec * dtSec.toFloat())
                 irVelX *= decay
                 irVelY *= decay
-                // Clamp velocity to a sane range
-                val maxVel = 1.5f // units per second
+                // Clamp velocity to configured max speed
+                val maxVel = speedScale // units per second
                 irVelX = irVelX.coerceIn(-maxVel, maxVel)
                 irVelY = irVelY.coerceIn(-maxVel, maxVel)
                 overlayPointer?.let { p ->
-                    val newX = (p.x + irVelX * dtSec.toFloat()).coerceIn(-1f, 1f)
-                    val newY = (p.y + irVelY * dtSec.toFloat()).coerceIn(-1f, 1f)
-                    // Zero velocity on hitting bounds so cursor doesn't "push" outside
-                    if (newX == -1f || newX == 1f) irVelX = 0f
-                    if (newY == -1f || newY == 1f) irVelY = 0f
-                    p.x = newX
-                    p.y = newY
-                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, p.x.toDouble())
-                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, -p.y.toDouble())
+                    // Keep within content bounds. Horizontal margins guard against side bars.
+                    val horizontalMargin = 0.20f // final hard boundary
+                    val xMin = -1f + horizontalMargin
+                    val xMax = 1f - horizontalMargin
+                    val yMin = -1f
+                    val yMax = 1f
+                    // Soft zone (ease-out) before the hard boundary to smooth stop
+                    val softWidth = 0.08f // inside each side
+                    fun applySoftDecel(pos: Float, vel: Float, min: Float, max: Float): Float {
+                        if (pos <= min || pos >= max) return 0f
+                        val distToEdge = if (vel > 0) (max - pos) else (pos - min)
+                        if (distToEdge >= softWidth) return vel
+                        val scale = (distToEdge / softWidth).coerceIn(0f, 1f)
+                        return vel * scale
+                    }
+                    // Apply soft deceleration before integrating position
+                    irVelX = applySoftDecel(p.x, irVelX, xMin, xMax)
+                    irVelY = applySoftDecel(p.y, irVelY, yMin, yMax)
+
+                    var tentativeX = p.x + irVelX * dtSec.toFloat()
+                    var tentativeY = p.y + irVelY * dtSec.toFloat()
+                    // Hard clamp: never allow crossing beyond margin / bounds
+                    if (tentativeX < xMin) { tentativeX = xMin; if (irVelX < 0f) irVelX = 0f }
+                    if (tentativeX > xMax) { tentativeX = xMax; if (irVelX > 0f) irVelX = 0f }
+                    if (tentativeY < yMin) { tentativeY = yMin; if (irVelY < 0f) irVelY = 0f }
+                    if (tentativeY > yMax) { tentativeY = yMax; if (irVelY > 0f) irVelY = 0f }
+                    p.x = tentativeX
+                    p.y = tentativeY
+                    val outX = p.x.toDouble()
+                    val outY = (-p.y).toDouble()
+                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_X, outX)
+                    InputOverrider.setControlState(controllerIndex, ControlId.WIIMOTE_IR_Y, outY)
                 }
                 // Schedule next tick
                 postDelayed(this, 16L)

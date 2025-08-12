@@ -80,3 +80,15 @@ Planned next:
 
 Artifacts:
 - Latest debug APK will be produced with timestamped name after build (see below).
+
+### 2025-08-11 (later)
+- IR pointer bounds: fixed lateral clamping so the cursor can’t exit at left/right edges; added safety clamp when writing IR states. Reduced friction so accel/speed presets feel distinct.
+- Editor UX: labels now show a small prefix to align with dropdowns ("|->To", "|->Doing").
+- Button list text: removed the word "Wiimote" and used symbols for Plus/Minus ("+" and "-").
+- Editor dialog actions: simplified footer to a single Save action on the right (removed Cancel/Add buttons); Save also persists current layout per scope.
+- Build: assembleDebug PASS; APK produced for testing.
+
+### 2025-08-11 (night)
+- Lateral bounds tightened further (20% margin each side) for IR pointer in both joystick-driven and touch modes.
+- Acceleration/Speed presets: selections now persist immediately and affect motion (speed scales both max velocity and acceleration); friction reduced for clearer differences.
+- Editor labels: removed special prefix characters; added left padding for alignment.
